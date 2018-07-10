@@ -60,6 +60,7 @@ fn main() {
     };
 
     let my_peer_id_clone = my_peer_id.clone();
+    let listened_addrs_clone = listened_addrs.clone();
     let (swarm_controller, swarm_future) = swarm::swarm(
         transport.with_upgrade(upgrade),
         move |upgrade, client_addr| match upgrade {
@@ -85,7 +86,7 @@ fn main() {
             .listen_on(to_listen)
             .expect("failed to listen to multiaddress");
         println!("Now listening on {}", actual_addr);
-        listened_addrs.write().unwrap().push(actual_addr);
+        listened_addrs_clone.write().unwrap().push(actual_addr);
     }
 
     // Runs until everything is finished.
@@ -105,32 +106,31 @@ pub struct ConnectionUpgrader {
 impl<C, Maf> ConnectionUpgrade<C, Maf> for ConnectionUpgrader
 where
     C: AsyncRead + AsyncWrite + 'static, // TODO: 'static :-/
-    Maf: Future,
+    Maf: Future<Item = Multiaddr, Error = io::Error> + 'static,
 {
     type NamesIter = ::std::vec::IntoIter<(Bytes, usize)>;
     type UpgradeIdentifier = usize;
-    type MultiaddrFuture = Maf;
+    type MultiaddrFuture = <IdentifyProtocolConfig as ConnectionUpgrade<C, Maf>>::MultiaddrFuture;
+    type Future = Box<Future<Item = (Self::Output, Self::MultiaddrFuture), Error = Maf::Error>>;
+    type Output = FinalUpgrade<C>;
 
     #[inline]
     fn protocol_names(&self) -> Self::NamesIter {
         vec![(Bytes::from("/ipfs/id/1.0.0"), 0)].into_iter()
     }
 
-    type Output = FinalUpgrade<C>;
-    type Future = Box<Future<Item = (FinalUpgrade<C>, Maf), Error = io::Error>>;
-
     fn upgrade(
         self,
         socket: C,
         id: Self::UpgradeIdentifier,
         ty: Endpoint,
-        remote_addr: Self::MultiaddrFuture,
+        remote_addr: Maf,
     ) -> Self::Future {
         match id {
             0 => Box::new(
                 self.identify
                     .upgrade(socket, (), ty, remote_addr)
-                    .map(|upg| upg.into()),
+                    .map(|upg| (FinalUpgrade::Identify(upg.0), upg.1)),
             ),
             _ => unreachable!(),
         }
